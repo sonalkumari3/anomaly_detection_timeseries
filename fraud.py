@@ -6,8 +6,9 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import stats
 import os
+import itertools
+import math
 
 class findFraudUsers:
 
@@ -28,13 +29,10 @@ class findFraudUsers:
             print("Fraud data is empty for approach "+ group_approach)
             return []
 
-         ##check the data-type of "fraud_users" and process accordingly
-        if(isinstance(fraud_users, list) == "False"):
-            user_list = np.unique(list(fraud_users['user_id']))
-        else:
-            user_list = np.unique(fraud_users)
+        user_list = np.unique(fraud_users)
 
         file.write("Total fraud user id using " + group_approach + " : " + str(len(user_list)) + '\n')
+        print("Total fraud user id using " + group_approach + " : " + str(len(user_list)))
 
         if (len(user_list) > 1):
             fraud_user_df = pd.DataFrame(user_list, columns=["user_id"])
@@ -43,57 +41,96 @@ class findFraudUsers:
 
         return user_list
 
+   def detect_fraud_modified_zscore(self, data, feature, threshold=3.5):
+        """
+         This function extract list of fraud users based on modified z-score.
+         source: https://lavastorm.zendesk.com/hc/en-us/community/posts/360009526673-Outlier-Detection-Using-Modifed-Z-Score
+         Parameters
+         ----------
+             data:                user data
+             group_approach:      the name of grouping method: identifier
+             threshold:           z_score cut point to differentiate fraud users from normal users: reccomended value should be 3
 
-   def detect_fraud_zscore(self, data, group_approach, threshold):
+         Returns
+         -------
+             user_list:           list of fraud/abnormal user id
+         """
+        ## make a copy before modifying it
+        data_z = data.copy()
+        ##feature contains the total search count for each of the user
+        data_z['mod_z_Score'] = 0.6745 * (data[feature] - data[feature].median()) / np.median(np.abs(data[feature] - data[feature].median()))
+        # max_z= math.ceil(data_z['mod_z_Score'].max())
+
+        ## histogram plot of modified z-score: to identify cut-off point (for abnormal search pattern) by looking at insights
+        self.hist_plot(data_z, 'mod_z_Score', "hist_serach_frequency_mod_z_Score.png", 100)
+
+        fraud_users = data_z[data_z['mod_z_Score'] > threshold]
+        user_list = self.write_fraud_user_data(fraud_users, 'mod_z_Score')
+
+
+        return user_list
+
+   def detect_fraud_zscore(self, data, feature, threshold=3):
         """
          This function extract list of fraud users based on z-score.
          Parameters
          ----------
              data:                user data
              group_approach:      the name of grouping method: identifier
-             threshold:           z_score cut point to differentiate fraud users from normal users
+             threshold:           z_score cut point to differentiate fraud users from normal users: reccomended value should be 3
 
          Returns
          -------
              user_list:           list of fraud/abnormal user id
          """
-        ##datetime contains the total search count for each of the user
-        data['z_Score'] = np.abs(stats.zscore(data['datetime']))
-        fraud_users = data[data['z_Score'] > threshold]
-        user_list = self.write_fraud_user_data(fraud_users, 'z_score_'+group_approach)
+        data_z = data.copy()
+        ##feature contains the total search count for each of the user
+        data_z['z_Score'] = (data[feature] - data[feature].mean()) / data[feature].std()
+        max_z= math.ceil(data_z['z_Score'].max())
+
+        ## histogram plot of z-score: to identify cut-off point (for abnormal search pattern) by looking at insights
+        self.hist_plot(data_z, 'z_Score', "hist_serach_frequency_z_Score.png", max_z)
+
+        fraud_users = data_z[data_z['z_Score'] > threshold]
+        user_list = self.write_fraud_user_data(fraud_users, 'z_score')
+
 
         return user_list
 
-   def find_common_user(self, list1, list2):
+   def find_frauds_ensemble_approach(self, listofList):
         """
-         This function extract list of common users from the given two lists.
+         This function extract the common users from the list of fraud users lists.
          Parameters
          ----------
-             list1:  a list of user id
-             list2:  another list of user id
+             listofList:    list of list of fraud users
 
-         Returns
-         -------
-             common_list:  a list of common user list
          """
-        common_list = list(set(list1) & set(list2))
-        return common_list
+        i=0
+        for cl in listofList:
+            if(i==0):
+                ### initialize with the first list for the first iteration
+                common_users=cl
+            else:
+                ## find the common user ids from the current list and previous iteration computed common user ids
+                common_users = list(set(common_users) & set(cl))
+            i +=1
 
-    ### identify fraud users based on iqr
-   def fraud_iqr(self, data, group_approach):
+        self.write_fraud_user_data(common_users, 'ensemble_approach')
+
+   def fraud_iqr(self, data, feature):
         """
          This function extract list of fraud users based on inter-quartile range (IQR).
          Parameters
          ----------
              data:               user data
-             group_approach:     the name of grouping method: identifier
+             feature:            feature name on which IQR based fraud detection is applied
 
          Returns
          -------
              user_list:          list of fraud/abnormal user id
          """
         ## compute 1st and 3rd quantile of user search frequency
-        q1, q3 = np.percentile(data['datetime'], [25, 75])
+        q1, q3 = np.percentile(data[feature], [25, 75])
         ### find the difference between 3rd and 1st quantile
         iqr = q3 - q1
 
@@ -102,42 +139,44 @@ class findFraudUsers:
         upper_bound = q3 + (1.5 * iqr)
 
         ##extract user data which lies outside the lower and upper bound: abnormal/fraud users
-        fraud_user_data = data.loc[((data['datetime'] < lower_bound) | (data['datetime'] > upper_bound))]  ##find outlier
+        fraud_user_data = data.loc[((data[feature] < lower_bound) | (data[feature] > upper_bound))]  ##find outlier
 
         ###write the result
-        fraud_user_list = self.write_fraud_user_data(fraud_user_data, 'iqr_' + group_approach)
+        fraud_user_list = self.write_fraud_user_data(fraud_user_data, 'iqr')
 
         return fraud_user_list
 
-   def hist_plot(self, df_group, plotname="hist_plot.png"):
+   def hist_plot(self, df_group, feature, plotname="hist_plot.png", bin_count=36):
         """
          This function plot histogram of user search frequency and save the plot with the given file name.
          Parameters
          ----------
-             df_group:      user data frame with frequency information in datetime column
+             df_group:      user data frame with frequency information in feature column
+             feature:       feature name for which histogram is plotted
              plotname:      file name to save the generated histogram plot
+             bin_count:     bin count for histogram plot
 
          """
-        ## plot the given data frequency count (i.e. datetime column)
-        plt.hist(df_group['datetime'], bins=list(range(36)))
+        ## plot the given data frequency count (i.e. feature column)
+        plt.hist(df_group[feature], bins=list(range(bin_count)))
 
         # Add title and axis names
         plt.title('Histogram plot for user search frequency')
-        plt.xlabel('Number of search frequency')
+        plt.xlabel(feature)
         plt.ylabel('Total number of users')
 
         ## save the plot to the disc
         plt.savefig(base_output + plotname)
         plt.close()
 
-   def identify_fraud_users_histogram_Approach(self, df_group, threshold, group_approach):
+   def identify_fraud_users_histogram_Approach(self, df_group, threshold, feature):
       """
       This function extract list of fraud users based on search frequency threshold computed through histogram plot.
       Parameters
       ----------
         df_group:           grouped user data with search frequency
         threshold:          a cut point for differentiating fraud users from normal users
-        group_approach:     the name of grouping method: identifier
+        feature:            feature name which is analyzed for finding frauds/anomaly
 
       Returns
       -------
@@ -145,49 +184,45 @@ class findFraudUsers:
       """
       ####identify fraud users based on histogram insights
       ## histogram plot of user groups: to identify abnormal search pattern
-      self.hist_plot(df_group, "hist_group_search_data"+group_approach+".png")
+      self.hist_plot(df_group, feature, "hist_group_search_data.png")
 
-      fraud_users_df = df_group[df_group['datetime'] >= threshold]
-      fraud_users_ids = np.unique(list(fraud_users_df['user_id']))
-      file.write("Total fraud user id based on user-group histogram insights : " + str(len(fraud_users_ids)) + '\n')
-
-      if (len(fraud_users_ids) > 1):
-         fraud_user_df = pd.DataFrame(fraud_users_ids, columns=["user_id"])
-         fraud_user_df = fraud_user_df.sort_values(by=['user_id'])
-         fraud_user_df.to_csv(base_output + 'fraud_users_hist_insights_'+group_approach+'.csv', index=False)
+      fraud_users_df = df_group[df_group[feature] >= threshold]
+      ###write the result
+      fraud_users_ids = self.write_fraud_user_data(fraud_users_df, 'hist_insights')
 
       return fraud_users_ids
 
-   def fraud_users_identification_techniques(self):
+   def fraud_users_identification_techniques(self, df):
       """
-      This function applies 3 major techniques to extract list of fraud users: 1) histogram insights based, 2) z-score based, 3) IQR based
+      This function applies 4 major techniques to extract list of fraud users: 1) histogram insights based, 2) z-score based, 3) IQR based, and 4) ensemble of all
       """
 
-      all_fraud_user_list = []
+      ### list of list initialization: to store list of fraud users extracted from various approaches
+      LoL = []
 
       ####identify fraud users based on histogram insights from cumulative user group
-      fraud_users_list_group_hist= self.identify_fraud_users_histogram_Approach(df_group, 30, "_based_on_user_id")
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_list_group_hist)
+      fraud_users_list_group_hist= self.identify_fraud_users_histogram_Approach(df, 30, "frequency")
 
-      ## extract fraud users badsed on histogram insights on daywise groups: to identify abnormal search pattern on daily-basis
-      fraud_users_list_group_hist_d = self.identify_fraud_users_histogram_Approach(df_daywise_group, 13, "_based_on_user_id_and_dayofyear")
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_list_group_hist_d)
+      LoL.append(fraud_users_list_group_hist)
 
       ### identify fraud users based on z-score
-      fraud_users_zscore = self.detect_fraud_zscore(df_group, "based_on_user_id", 1)
-      fraud_users_zscore_d = self.detect_fraud_zscore(df_daywise_group, "based_on_user_id_and_dayofyear", 1)
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_zscore)
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_zscore_d)
+      # fraud_users_zscore = self.detect_fraud_zscore(df, "frequency", 3)
+      # LoL.append(fraud_users_zscore)
+
+      ### identify fraud users based on modified z-score
+      fraud_users_mod_zscore = self.detect_fraud_modified_zscore(df, "frequency", 3.5)
+
+      LoL.append(fraud_users_mod_zscore)
 
       ### identify fraud users based on IQR
-      fraud_users_iqr = self.fraud_iqr(df_group, "based_on_user_id")
-      fraud_users_iqr_d = self.fraud_iqr(df_daywise_group, "based_on_user_id_and_dayofyear")
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_iqr)
-      all_fraud_user_list == all_fraud_user_list.extend(fraud_users_iqr_d)
+      fraud_users_iqr = self.fraud_iqr(df, "frequency")
+      LoL.append(fraud_users_iqr)
 
-      common_user = findFraudUsersObj.find_common_user(fraud_users_zscore_d, fraud_users_list_group_hist_d)
-      file.write("Total common fraud users from hist and daywise z-score : " + str(len(common_user)) + '\n')
+      ###find fraud users by ensembling above list
+      findFraudUsersObj.find_frauds_ensemble_approach(LoL)
 
+      ## Flattening the list of list of fraud users
+      all_fraud_user_list = list(itertools.chain.from_iterable(LoL))
       ### remove duplicates from the combined fraud user lists (coming from all the techniques applied)
       self.write_fraud_user_data(all_fraud_user_list, 'combined_all_techniques_frauds')
 
@@ -232,8 +267,6 @@ class fileRead:
       timeseries_df = df.copy()
       ### rename *_ts column name to datetime
       timeseries_df.columns = timeseries_df.columns.str.replace('.*_ts', 'datetime')
-      # timeseries_df.rename(columns={timeseries_df.columns.tolist()[-1]: 'datetime'}, inplace=True)
-      # timeseries_df.rename(columns={"signup_ts": "datetime"}, inplace=True)
 
       ### converting millisecond to datetime
       timeseries_df['datetime'] = pd.to_datetime(timeseries_df['datetime'], unit='ms')
@@ -271,7 +304,54 @@ class fileRead:
       uniue_users_df = df['user_id'].unique()
       file.write("Total number of unique user : " + str(uniue_users_df.shape[0]) + '\n')
 
+class preProcess:
 
+    def remove_valid_users(self):
+        ## combining call and message user data: valid users
+        valid_users_df = pd.concat([call_df, message_df])
+
+        ### removing data from valid_users_df of dates exceeding date in search_df
+        max_dayofyear = search_df['dayofyear'].max()
+        valid_users_df = valid_users_df[valid_users_df['dayofyear'] <= max_dayofyear]
+
+        ### grouping serach users based on user_id and dayofyear (future scope: per week instead of per day)
+        ### dayofyear can be used if the lag between call/message and search timestamp is less (in minutes)
+        ## in the given data the lag is huge, so couldn't use it
+        # grouping_columns=['user_id', 'dayofyear']
+        grouping_columns = ['user_id']
+        ### a constant number (>=1) which is equivalent to total number of failure search
+        threshold_count = 3  ## a small number like 2,3,4, assuming few search per call/message
+        ### extracting search frequency counts for each individual users (could be per day if no/lower lag in timestamp)
+        search_df_count = search_df.groupby(grouping_columns).count().reset_index()
+        search_df_count.rename(columns={"datetime": "frequency"}, inplace=True)
+
+        ## sorting is done to compare the frequency with valid users' call/message frequency count
+        search_df_count = search_df_count.sort_values(by=grouping_columns, ascending=True)
+
+        ## same operation is performed on valid_users_df
+        valid_users_df_count = valid_users_df.groupby(grouping_columns).count().reset_index()
+        valid_users_df_count.rename(columns={"datetime": "frequency"}, inplace=True)
+        valid_users_df_count = valid_users_df_count.sort_values(by=grouping_columns, ascending=True)
+
+        ### left merge/join is done because, search requires database lookup which can be a threat/fraud
+        merged_df = pd.merge(search_df_count, valid_users_df_count, on=grouping_columns, how='left')
+        merged_df.rename(columns={"frequency_x": "search_frequency", "frequency_y": "call_frequency"}, inplace=True)
+        ## fill NaN (i.e. no call or message on that day by a particular user) with 0
+        merged_df['call_frequency'].fillna(0, inplace=True)
+        merged_df['call_frequency'] = merged_df['call_frequency'] * threshold_count
+
+        merged_df['frequency'] = merged_df['search_frequency'] - merged_df['call_frequency']
+        unique_users = len(np.unique(list(merged_df['user_id'])))
+        print("Total unique users who lookup the database: " + str(unique_users))
+        file.write("Total unique users who lookup the database: " + str(unique_users) + '\n')
+
+        ### remove those users who serached the database with a call/message record
+        merged_df = merged_df[merged_df['frequency'] > 0]
+        unique_users = len(np.unique(list(merged_df['user_id'])))
+        print("Total unique users who lookup the database without any call/message history: " + str(unique_users))
+        file.write(
+            "Total unique users who lookup the database without any call/message history: " + str(unique_users) + '\n')
+        return merged_df
 if __name__ == '__main__':
 
     # reading all tab seperated data files
@@ -293,35 +373,19 @@ if __name__ == '__main__':
 
     file.write("############ Input data loaded in the memory ###########" + '\n')
 
-
     file.write('\n\n' + "############ Removing valid users from search data ###########" + '\n')
-    ### remove valid users from search data table: extract those serach users who are not in call or sms datasets
-    file.write("nitially, Search data size= " + str(search_df.shape[0]) + ' & unique users= ' + str(search_df['user_id'].unique().shape[0])+ '\n')
+    preProcessObi=preProcess()
+    merged_df = preProcessObi.remove_valid_users()
 
-    df_search_sample = search_df[~search_df['user_id'].isin(call_df['user_id'])]
-    file.write("After removing call users, size= " + str(df_search_sample.shape[0]) + ' & unique users= ' + str(df_search_sample['user_id'].unique().shape[0])+'\n')
 
-    df_search_sample = df_search_sample[~df_search_sample['user_id'].isin(message_df['user_id'])]
-    file.write("After removing message users, size= " + str(df_search_sample.shape[0]) + ' & unique users= ' + str(df_search_sample['user_id'].unique().shape[0])+'\n')
-
-    file.write('\n\n' + "Creating groups of remaining users in search data based on user_id and day of year" + '\n')
-    ## sort extracted serach user data for further insight generation
-    # df_search_sample = df_search_sample.sort_values(by=['user_id', 'datetime'], ascending=False)
-
-    ### grouping serach users based on user_id
-    df_group = df_search_sample.groupby(['user_id']).count().reset_index()
-    file.write("Total number of Groups of tentative user data shape based on user_id : " + str(df_group.shape[0]) + '\n')
-
-    ### grouping serach users based on user_id and day of year
-    df_daywise_group = df_search_sample.groupby(['user_id', 'dayofyear']).count().reset_index()
-    file.write("Total number of Groups of tentative user data shape based on user_id & dayofyear : " + str(df_daywise_group.shape[0]) + '\n')
-
-    file.write('\n\n' + "############ Finding Fraud users in search data with tentative fraud users ###########" + '\n')
+    file.write('\n\n' + "############ Finding Fraud users from merged_df ###########" + '\n')
+    ##merged_df is subset of search data which contains all fraud users
     findFraudUsersObj = findFraudUsers()
-    findFraudUsersObj.fraud_users_identification_techniques()
+    findFraudUsersObj.fraud_users_identification_techniques(merged_df[:])
 
 
     file.close()
+
 
 
 
