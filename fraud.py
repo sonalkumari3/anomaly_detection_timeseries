@@ -29,7 +29,11 @@ class findFraudUsers:
             print("Fraud data is empty for approach "+ group_approach)
             return []
 
-        user_list = np.unique(fraud_users)
+         ##check the data-type of "fraud_users" and process accordingly
+        if(isinstance(fraud_users, list) == False):
+            user_list = np.unique(list(fraud_users['user_id']))
+        else:
+            user_list = np.unique(fraud_users)
 
         file.write("Total fraud user id using " + group_approach + " : " + str(len(user_list)) + '\n')
         print("Total fraud user id using " + group_approach + " : " + str(len(user_list)))
